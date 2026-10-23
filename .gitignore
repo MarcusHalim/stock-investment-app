@@ -1,0 +1,30 @@
+# Python Virtual Environment & Cache
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local DuckDB Database Files & Raw Exports
+data/*.duckdb
+data/*.duckdb.wal
+data/*.parquet
+data/*.csv
+
+# dbt Artifacts (generated automatically during runs)
+dbt_stock_project/target/
+dbt_stock_project/dbt_packages/
+dbt_stock_project/logs/
+profiles.yml
+
+# Environment Variables & Secrets
+.env
+.secrets/
+*.pem
+*.key
+
+# IDE & OS Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
