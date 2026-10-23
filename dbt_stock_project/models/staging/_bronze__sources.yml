@@ -1,0 +1,48 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: "Raw append-only tables ingested into the Bronze schema."
+    schema: bronze
+    tables:
+      - name: bronze_stock_prices_daily
+        description: "Daily unadjusted OHLCV, stock splits, and cash dividends."
+        columns:
+          - name: ticker
+            tests:
+              - not_null
+          - name: trade_date
+            tests:
+              - not_null
+          - name: close_price
+            tests:
+              - not_null
+
+      - name: bronze_sp500_constituents
+        description: "S&P 500 constituent list and historical index membership dates."
+        columns:
+          - name: ticker
+            tests:
+              - not_null
+          - name: date_added
+            tests:
+              - not_null
+
+      - name: bronze_macro_indicators
+        description: "Daily benchmark SPY close and CBOE VIX volatility index close."
+        columns:
+          - name: trade_date
+            tests:
+              - unique
+              - not_null
+          - name: spy_close
+            tests:
+              - not_null
+
+      - name: bronze_manual_executions
+        description: "Append-only trade execution log written from the Streamlit UI."
+        columns:
+          - name: execution_id
+            tests:
+              - unique
+              - not_null
