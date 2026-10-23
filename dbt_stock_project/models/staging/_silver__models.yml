@@ -1,0 +1,83 @@
+version: 2
+
+models:
+  - name: stg_trading_calendar
+    description: "Dense daily calendar flagging valid exchange trading days and month-end dates."
+    columns:
+      - name: calendar_date
+        tests:
+          - unique
+          - not_null
+      - name: is_trading_day
+        tests:
+          - not_null
+      - name: is_month_end_trading_day
+        tests:
+          - not_null
+
+  - name: stg_stock_prices_daily
+    description: "Daily stock prices standardized with split-adjusted close, total-return close, and 200d SMA."
+    columns:
+      - name: ticker
+        tests:
+          - not_null
+      - name: trade_date
+        tests:
+          - not_null
+      - name: raw_close_price
+        tests:
+          - not_null
+      - name: split_adj_close_price
+        tests:
+          - not_null
+      - name: total_return_close
+        tests:
+          - not_null
+
+  - name: stg_sp500_historical_membership
+    description: "Point-in-time S&P 500 constituent membership and pricing tenure tracker."
+    columns:
+      - name: trade_date
+        tests:
+          - not_null
+      - name: ticker
+        tests:
+          - not_null
+      - name: is_in_index
+        tests:
+          - not_null
+
+  - name: stg_macro_regimes
+    description: "Daily macro indicators (SPY, VIX, Market Breadth) and derived regime classification."
+    columns:
+      - name: trade_date
+        tests:
+          - unique
+          - not_null
+      - name: spy_close
+        tests:
+          - not_null
+      - name: regime_status
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['BULL_STABLE', 'HIGH_VOLATILITY', 'BEAR_CONTRACTION']
+
+  - name: stg_portfolio_trade_log
+    description: "Cleaned and signed manual portfolio trade executions."
+    columns:
+      - name: execution_id
+        tests:
+          - unique
+          - not_null
+      - name: ticker
+        tests:
+          - not_null
+      - name: action
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['BUY', 'SELL']
+      - name: signed_shares
+        tests:
+          - not_null
