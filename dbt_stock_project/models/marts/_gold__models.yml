@@ -1,0 +1,133 @@
+version: 2
+
+models:
+  - name: fct_stock_returns_monthly
+    description: "Monthly total returns for equities and SPY benchmark, plus active excess returns."
+    columns:
+      - name: year_month
+        tests:
+          - not_null
+      - name: ticker
+        tests:
+          - not_null
+      - name: stock_return_monthly
+        tests:
+          - not_null
+      - name: spy_return_monthly
+        tests:
+          - not_null
+      - name: excess_return_monthly
+        tests:
+          - not_null
+      - name: is_spy_up_month
+        tests:
+          - not_null
+
+  - name: fct_stock_drift_and_residuals
+    description: "Rolling 90-day linear regression (Alpha/Beta vs SPY) and residual Z-score anomaly detector."
+    columns:
+      - name: trade_date
+        tests:
+          - not_null
+      - name: ticker
+        tests:
+          - not_null
+      - name: rolling_90d_beta
+        tests:
+          - not_null
+      - name: daily_residual
+        tests:
+          - not_null
+      - name: residual_z_score
+        tests:
+          - not_null
+      - name: is_anomaly_alert
+        tests:
+          - not_null
+
+  - name: fct_stock_risk_metrics
+    description: "Rolling 3y, 5y, and 10y Sortino, Downside Semi-Deviation, Max Drawdown, and Capture Ratios."
+    columns:
+      - name: eval_date
+        tests:
+          - not_null
+      - name: ticker
+        tests:
+          - not_null
+      - name: lookback_window_years
+        tests:
+          - not_null
+          - accepted_values:
+              values: [3, 5, 10]
+      - name: downside_semi_deviation
+        tests:
+          - not_null
+      - name: sortino_ratio
+        tests:
+          - not_null
+      - name: max_drawdown
+        tests:
+          - not_null
+
+  - name: dim_stock_bucket_classification
+    description: "Hysteresis-buffered classification of equities into Aggressive and Steady barbell buckets."
+    columns:
+      - name: eval_date
+        tests:
+          - not_null
+      - name: ticker
+        tests:
+          - not_null
+      - name: ipo_tenure_tier
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['EXCLUDED', 'EMERGING', 'MATURE']
+      - name: current_bucket
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['BUCKET_A_AGGRESSIVE', 'BUCKET_B_STEADY', 'UNASSIGNED']
+      - name: is_structural_drift_flag
+        tests:
+          - not_null
+
+  - name: fct_portfolio_target_allocations
+    description: "Risk-parity target weights with correlation clustering, sector caps, and SPY fallback."
+    columns:
+      - name: eval_date
+        tests:
+          - not_null
+      - name: ticker
+        tests:
+          - not_null
+      - name: assigned_bucket
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['BUCKET_A_AGGRESSIVE', 'BUCKET_B_STEADY', 'SAFE_HARBOR_SPY']
+      - name: final_target_weight
+        tests:
+          - not_null
+
+  - name: fct_portfolio_actual_vs_target
+    description: "Reconciles manual trade holdings against target weights and generates the Action Order Sheet."
+    columns:
+      - name: as_of_date
+        tests:
+          - not_null
+      - name: ticker
+        tests:
+          - not_null
+          - unique
+      - name: actual_portfolio_weight
+        tests:
+          - not_null
+      - name: target_portfolio_weight
+        tests:
+          - not_null
+      - name: recommended_action
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['BUY', 'SELL', 'HOLD', 'PAUSED_BY_MACRO_FILTER']
