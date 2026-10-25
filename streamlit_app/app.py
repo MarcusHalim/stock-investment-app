@@ -320,6 +320,10 @@ with tab_buckets:
     """)
 
     if not buckets_df.empty:
+        # Ensure numeric types and create a strictly positive marker_size column for Plotly
+        buckets_df["sortino_ratio"] = buckets_df["sortino_ratio"].astype(float)
+        buckets_df["marker_size"] = buckets_df["sortino_ratio"].clip(lower=0.0) + 0.1
+
         c1, c2 = st.columns([2, 1])
         with c1:
             fig_scatter = px.scatter(
@@ -327,17 +331,16 @@ with tab_buckets:
                 x="down_market_capture",
                 y="up_market_capture",
                 color="current_bucket",
-                size="sortino_ratio"
-                if (buckets_df["sortino_ratio"] > 0).any()
-                else None,
+                size="marker_size",
                 hover_name="ticker",
-                hover_data=[
-                    "sector",
-                    "sortino_ratio",
-                    "information_ratio",
-                    "max_drawdown",
-                    "final_target_weight",
-                ],
+                hover_data={
+                    "marker_size": False,
+                    "sector": True,
+                    "sortino_ratio": ":.4f",
+                    "information_ratio": ":.4f",
+                    "max_drawdown": ":.2%",
+                    "final_target_weight": ":.2%",
+                },
                 title="Up-Market vs. Down-Market Capture Ratio (5-Year Rolling vs. SPY)",
             )
             fig_scatter.add_hline(y=1.0, line_dash="dash", line_color="gray")
@@ -359,7 +362,11 @@ with tab_buckets:
                 )
                 st.plotly_chart(fig_pie, use_container_width=True)
 
-        st.dataframe(buckets_df, use_container_width=True, hide_index=True)
+        st.dataframe(
+            buckets_df.drop(columns=["marker_size"]),
+            use_container_width=True,
+            hide_index=True,
+        )
 
 # ------------------------------------------
 # TAB 3: IDIOSYNCRATIC RISK & DRIFT ALERTS
