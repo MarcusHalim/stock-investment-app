@@ -3,13 +3,12 @@ Deterministic Bronze Layer Mock Seeder for CI/CD Integration Testing.
 Populates 6 years of synthetic daily data so dbt build can validate all 3y and 5y models.
 """
 
-from datetime import date, datetime, timezone
-from pathlib import Path
 import uuid
+from datetime import UTC, date, datetime
+from pathlib import Path
 
 import duckdb
 import pandas as pd
-
 from ingest_bronze_local import init_bronze_schema
 
 DB_PATH = Path("data/stock_app_dev.duckdb")
@@ -18,7 +17,7 @@ DB_PATH = Path("data/stock_app_dev.duckdb")
 def seed_ci_database() -> None:
     """Seeds synthetic Bronze data into a fresh DuckDB instance for CI testing."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    now_ts = datetime.now(timezone.utc).replace(tzinfo=None)
+    now_ts = datetime.now(UTC).replace(tzinfo=None)
 
     # Generate business days across 6+ years (ensures >60 months for 5-year rolling windows)
     b_days = pd.date_range(start="2019-01-01", end="2026-02-01", freq="B")
