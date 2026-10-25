@@ -1,0 +1,57 @@
+name: CI - Lint & dbt DuckDB Pipeline
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  lint-and-test:
+    name: Python Ruff, SQLFluff & dbt Build (DuckDB)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Ruff Python Linter & Formatter Check
+        run: |
+          ruff check scripts/ streamlit_app/
+          ruff format --check scripts/ streamlit_app/
+
+      - name: Run SQLFluff Linter on dbt Models & Tests
+        run: |
+          sqlfluff lint dbt_stock_project/models dbt_stock_project/tests
+
+      - name: Create Ephemeral dbt profiles.yml for CI Runner
+        run: |
+          cat << 'EOF' > dbt_stock_project/profiles.yml
+          dbt_stock_project:
+            target: dev
+            outputs:
+              dev:
+                type: duckdb
+                path: "data/stock_app_dev.duckdb"
+                schema: main
+                threads: 4
+          EOF
+
+      - name: Seed Ephemeral DuckDB Bronze Layer with Mock Data
+        run: |
+          python scripts/seed_ci_mock_data.py
+
+      - name: Execute dbt Build (Run All Silver/Gold Models + All Data Quality Tests)
+        run: |
+          dbt build --project-dir dbt_stock_project --profiles-dir dbt_stock_project
