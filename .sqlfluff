@@ -1,0 +1,32 @@
+[sqlfluff]
+dialect = duckdb
+templater = jinja
+max_line_length = 120
+processes = -1
+# Exclude rules that conflict with clean analytical CTEs and financial column ordering
+exclude_rules = AL01, AM04, LT02, LT05, LT09, RF02, RF04, ST06, ST07
+
+[sqlfluff:indentation]
+indent_unit = space
+tab_space_size = 4
+
+[sqlfluff:rules:capitalisation.keywords]
+capitalisation_policy = lower
+
+[sqlfluff:rules:capitalisation.identifiers]
+extended_capitalisation_policy = lower
+
+[sqlfluff:rules:capitalisation.functions]
+extended_capitalisation_policy = lower
+
+[sqlfluff:rules:capitalisation.literals]
+capitalisation_policy = lower
+
+[sqlfluff:rules:capitalisation.types]
+extended_capitalisation_policy = lower
+
+# Provide dummy Jinja macros so SQLFluff can lint dbt SQL without needing a live DB connection
+[sqlfluff:templater:jinja:macros]
+dbt_ref = {% macro ref(model_ref) %}silver.{{ model_ref }}{% endmacro %}
+dbt_source = {% macro source(source_name, table_name) %}{{ source_name }}.{{ table_name }}{% endmacro %}
+dbt_config = {% macro config() %}{% endmacro %}

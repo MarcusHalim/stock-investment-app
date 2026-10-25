@@ -30,16 +30,14 @@ pit_membership as (
         idx.ticker,
         idx.company_name,
         idx.sector,
-        case
-            when c.trade_date >= idx.date_added
-                 and (idx.date_removed is null or c.trade_date <= idx.date_removed)
-            then true
-            else false
-        end as is_in_index
+        true as is_in_index
     from active_trading_days c
     inner join constituents idx
         on c.trade_date >= idx.date_added
-       and (idx.date_removed is null or c.trade_date <= idx.date_removed)
+        and (
+            idx.date_removed is null
+            or c.trade_date <= idx.date_removed
+        )
 ),
 
 -- Deduplicate in case a ticker has overlapping constituent intervals

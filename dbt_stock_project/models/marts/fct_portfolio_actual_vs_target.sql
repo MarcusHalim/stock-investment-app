@@ -8,8 +8,7 @@ with latest_market_state as (
 ),
 
 latest_eval_month as (
-    select
-        max(eval_date) as latest_eval_date
+    select max(eval_date) as latest_eval_date
     from {{ ref('fct_portfolio_target_allocations') }}
 ),
 
@@ -20,8 +19,8 @@ latest_targets as (
         cast(t.final_target_weight as double) as target_weight,
         cast(t.lower_tolerance_bound as double) as lower_bound,
         cast(t.upper_tolerance_bound as double) as upper_bound
-    from {{ ref('fct_portfolio_target_allocations') }} t
-    inner join latest_eval_month m
+    from {{ ref('fct_portfolio_target_allocations') }} as t
+    inner join latest_eval_month as m
         on t.eval_date = m.latest_eval_date
 ),
 
@@ -42,14 +41,20 @@ latest_equity_prices as (
     qualify row_number() over (partition by ticker order by trade_date desc) = 1
 ),
 
-all_Latest_prices as (
-    select ticker, latest_close_price from latest_equity_prices
+all_latest_prices as (
+    select
+        ticker,
+        latest_close_price
+    from latest_equity_prices
     union all
     select
         'SPY' as ticker,
         spy_close as latest_close_price
     from latest_market_state
-    where not exists (select 1 from latest_equity_prices where ticker = 'SPY')
+    where not exists (
+        select 1 from latest_equity_prices
+        where ticker = 'SPY'
+    )
 ),
 
 full_universe as (
@@ -69,13 +74,13 @@ valued_positions as (
         coalesce(t.lower_bound, 0.0) as lower_bound,
         coalesce(t.upper_bound, 0.0) as upper_bound,
         ms.active_macro_regime
-    from full_universe u
-    cross join latest_market_state ms
-    left join current_holdings h
+    from full_universe as u
+    cross join latest_market_state as ms
+    left join current_holdings as h
         on u.ticker = h.ticker
-    left join all_latest_prices p
+    left join all_latest_prices as p
         on u.ticker = p.ticker
-    left join latest_targets t
+    left join latest_targets as t
         on u.ticker = t.ticker
 ),
 
@@ -100,9 +105,9 @@ drift_evaluation as (
         target_portfolio_weight,
         case
             when target_portfolio_weight > 0
-            then (actual_portfolio_weight - target_portfolio_weight) / target_portfolio_weight
+                then (actual_portfolio_weight - target_portfolio_weight) / target_portfolio_weight
             when actual_portfolio_weight > 0
-            then 1.0
+                then 1.0
             else 0.0
         end as relative_weight_drift,
         case
@@ -130,10 +135,11 @@ select
     case
         when not is_tolerance_breached then 'HOLD'
         when active_macro_regime = 'HIGH_VOLATILITY' then 'PAUSED_BY_MACRO_FILTER'
-        when active_macro_regime = 'BEAR_CONTRACTION'
-             and suggested_trade_weight_diff > 0
-             and ticker != 'SPY'
-        then 'PAUSED_BY_MACRO_FILTER'
+        when
+            active_macro_regime = 'BEAR_CONTRACTION'
+            and suggested_trade_weight_diff > 0
+            and ticker != 'SPY'
+            then 'PAUSED_BY_MACRO_FILTER'
         when suggested_trade_weight_diff > 0 then 'BUY'
         when suggested_trade_weight_diff < 0 then 'SELL'
         else 'HOLD'

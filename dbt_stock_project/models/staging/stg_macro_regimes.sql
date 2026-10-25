@@ -22,11 +22,12 @@ daily_breadth as (
         p.trade_date,
         count(case when p.sma_200d is not null then 1 end) as eligible_constituents,
         sum(case when p.is_above_200d_sma = true then 1 else 0 end) as above_sma_count
-    from {{ ref('stg_stock_prices_daily') }} p
-    inner join {{ ref('stg_sp500_historical_membership') }} m
-        on p.ticker = m.ticker
-       and p.trade_date = m.trade_date
-       and m.is_in_index = true
+    from {{ ref('stg_stock_prices_daily') }} as p
+    inner join {{ ref('stg_sp500_historical_membership') }} as m
+        on
+            p.ticker = m.ticker
+            and p.trade_date = m.trade_date
+            and m.is_in_index = true
     group by p.trade_date
 ),
 
@@ -38,25 +39,25 @@ combined_macro as (
             cast(
                 case
                     when b.prev_spy_close > 0
-                    then (b.spy_close / b.prev_spy_close) - 1.0
+                        then (b.spy_close / b.prev_spy_close) - 1.0
                 end as decimal(10, 6)
             ),
             6
         ) as spy_daily_return,
         case
             when b.spy_window_obs = 200
-            then round(cast(b.raw_spy_sma_200d as decimal(12, 4)), 4)
+                then round(cast(b.raw_spy_sma_200d as decimal(12, 4)), 4)
         end as spy_sma_200d,
         round(cast(b.vix_close as decimal(8, 4)), 4) as vix_close,
         case
             when d.eligible_constituents > 0
-            then round(
-                cast(d.above_sma_count as double) / cast(d.eligible_constituents as double),
-                4
-            )
+                then round(
+                    cast(d.above_sma_count as double) / cast(d.eligible_constituents as double),
+                    4
+                )
         end as market_breadth_pct
-    from macro_base b
-    left join daily_breadth d
+    from macro_base as b
+    left join daily_breadth as d
         on b.trade_date = d.trade_date
 )
 

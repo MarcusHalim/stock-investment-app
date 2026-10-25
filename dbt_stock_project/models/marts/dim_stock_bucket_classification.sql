@@ -5,10 +5,11 @@ with month_end_membership as (
         m.sector,
         m.is_in_index,
         m.years_since_first_ingest
-    from {{ ref('stg_sp500_historical_membership') }} m
-    inner join {{ ref('stg_trading_calendar') }} c
-        on m.trade_date = c.calendar_date
-       and c.is_month_end_trading_day = true
+    from {{ ref('stg_sp500_historical_membership') }} as m
+    inner join {{ ref('stg_trading_calendar') }} as c
+        on
+            m.trade_date = c.calendar_date
+            and c.is_month_end_trading_day = true
     where m.is_in_index = true
 ),
 
@@ -46,21 +47,24 @@ raw_eligibility as (
         r.down_capture_sma_200w,
         -- Strict Entry Candidate Classification
         case
-            when m.years_since_first_ingest >= 10.0
-                 and r.sortino_ratio >= 0.35
-                 and r.down_market_capture <= 0.90
-                 and r.max_drawdown >= -0.50
-            then 'BUCKET_B_STEADY'
-            when m.years_since_first_ingest >= 5.0
-                 and r.up_market_capture >= 1.15
-                 and r.information_ratio >= 0.25
-            then 'BUCKET_A_AGGRESSIVE'
+            when
+                m.years_since_first_ingest >= 10.0
+                and r.sortino_ratio >= 0.35
+                and r.down_market_capture <= 0.90
+                and r.max_drawdown >= -0.50
+                then 'BUCKET_B_STEADY'
+            when
+                m.years_since_first_ingest >= 5.0
+                and r.up_market_capture >= 1.15
+                and r.information_ratio >= 0.25
+                then 'BUCKET_A_AGGRESSIVE'
             else 'UNASSIGNED'
         end as entry_candidate_bucket
-    from month_end_membership m
-    inner join risk_5y r
-        on m.eval_date = r.eval_date
-       and m.ticker = r.ticker
+    from month_end_membership as m
+    inner join risk_5y as r
+        on
+            m.eval_date = r.eval_date
+            and m.ticker = r.ticker
 ),
 
 prior_state as (
@@ -86,20 +90,22 @@ hysteresis_evaluated as (
         case
             -- 1. If it qualifies on strict entry criteria, assign directly
             when entry_candidate_bucket != 'UNASSIGNED'
-            then entry_candidate_bucket
+                then entry_candidate_bucket
             -- 2. Hysteresis retention for BUCKET_B_STEADY (buffer zone before eviction)
-            when prior_bucket = 'BUCKET_B_STEADY'
-                 and ipo_tenure_tier = 'MATURE'
-                 and sortino_ratio >= 0.15
-                 and down_market_capture <= 1.00
-                 and max_drawdown >= -0.55
-            then 'BUCKET_B_STEADY'
+            when
+                prior_bucket = 'BUCKET_B_STEADY'
+                and ipo_tenure_tier = 'MATURE'
+                and sortino_ratio >= 0.15
+                and down_market_capture <= 1.00
+                and max_drawdown >= -0.55
+                then 'BUCKET_B_STEADY'
             -- 3. Hysteresis retention for BUCKET_A_AGGRESSIVE (buffer zone before eviction)
-            when prior_bucket = 'BUCKET_A_AGGRESSIVE'
-                 and ipo_tenure_tier in ('EMERGING', 'MATURE')
-                 and up_market_capture >= 1.05
-                 and information_ratio >= 0.05
-            then 'BUCKET_A_AGGRESSIVE'
+            when
+                prior_bucket = 'BUCKET_A_AGGRESSIVE'
+                and ipo_tenure_tier in ('EMERGING', 'MATURE')
+                and up_market_capture >= 1.05
+                and information_ratio >= 0.05
+                then 'BUCKET_A_AGGRESSIVE'
             else 'UNASSIGNED'
         end as current_bucket,
         -- Flag structural drift if 50w Down-Capture degrades significantly above 200w baseline

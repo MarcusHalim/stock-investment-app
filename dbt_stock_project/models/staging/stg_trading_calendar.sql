@@ -13,12 +13,20 @@ date_bounds as (
     from spy_trading_days
 ),
 
+multiplier_cte as (
+    select 1 as mult_id
+    union all
+    select 2 as mult_id
+    union all
+    select 3 as mult_id
+),
+
 -- Generate a contiguous daily spine from min_date to max_date (up to 15,000 calendar days / ~41 years)
 number_spine as (
     select
         row_number() over (order by 1) - 1 as day_offset
-    from {{ source('bronze', 'bronze_macro_indicators') }} a
-    cross join (select 1 union all select 2 union all select 3) b
+    from {{ source('bronze', 'bronze_macro_indicators') }}
+    cross join multiplier_cte
 ),
 
 calendar_grid as (

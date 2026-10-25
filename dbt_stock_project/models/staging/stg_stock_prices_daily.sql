@@ -18,8 +18,9 @@ raw_prices as (
         end as split_factor,
         coalesce(cast(dividend_amount as double), 0.0) as dividend_amount
     from {{ source('bronze', 'bronze_stock_prices_daily') }}
-    where close_price is not null
-      and close_price > 0
+    where
+        close_price is not null
+        and close_price > 0
 ),
 
 -- Align prices strictly to valid exchange trading days and get prior close for dividend math
@@ -35,8 +36,8 @@ aligned_prices as (
             partition by p.ticker
             order by p.trade_date
         ) as prev_raw_close
-    from raw_prices p
-    inner join active_trading_days c
+    from raw_prices as p
+    inner join active_trading_days as c
         on p.trade_date = c.trade_date
 ),
 
@@ -64,10 +65,11 @@ adjustment_factors as (
                 sum(
                     ln(
                         case
-                            when dividend_amount > 0
-                                 and prev_raw_close is not null
-                                 and prev_raw_close > dividend_amount
-                            then 1.0 - (dividend_amount / prev_raw_close)
+                            when
+                                dividend_amount > 0
+                                and prev_raw_close is not null
+                                and prev_raw_close > dividend_amount
+                                then 1.0 - (dividend_amount / prev_raw_close)
                             else 1.0
                         end
                     )
@@ -128,18 +130,18 @@ select
         cast(
             case
                 when prev_total_return_close > 0
-                then (total_return_close / prev_total_return_close) - 1.0
+                    then (total_return_close / prev_total_return_close) - 1.0
             end as decimal(10, 6)
         ),
         6
     ) as daily_return,
     case
         when window_200d_obs = 200
-        then round(cast(raw_sma_200d as decimal(12, 4)), 4)
+            then round(cast(raw_sma_200d as decimal(12, 4)), 4)
     end as sma_200d,
     case
         when window_200d_obs = 200
-        then split_adj_close_price > raw_sma_200d
+            then split_adj_close_price > raw_sma_200d
     end as is_above_200d_sma,
     is_actively_traded
 from window_metrics

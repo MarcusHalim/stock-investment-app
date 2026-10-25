@@ -4,11 +4,12 @@ with daily_paired as (
         p.ticker,
         cast(p.daily_return as double) as stock_ret,
         cast(m.spy_daily_return as double) as spy_ret
-    from {{ ref('stg_stock_prices_daily') }} p
-    inner join {{ ref('stg_macro_regimes') }} m
+    from {{ ref('stg_stock_prices_daily') }} as p
+    inner join {{ ref('stg_macro_regimes') }} as m
         on p.trade_date = m.trade_date
-    where p.daily_return is not null
-      and m.spy_daily_return is not null
+    where
+        p.daily_return is not null
+        and m.spy_daily_return is not null
 ),
 
 rolling_moments as (
@@ -54,7 +55,7 @@ regression_params as (
         obs_90d,
         case
             when obs_90d = 90 and (avg_xx - (avg_x * avg_x)) > 1e-12
-            then (avg_xy - (avg_x * avg_y)) / (avg_xx - (avg_x * avg_x))
+                then (avg_xy - (avg_x * avg_y)) / (avg_xx - (avg_x * avg_x))
         end as beta_90d,
         avg_y,
         avg_x
@@ -69,15 +70,15 @@ residuals_calc as (
         beta_90d,
         case
             when beta_90d is not null
-            then avg_y - (beta_90d * avg_x)
+                then avg_y - (beta_90d * avg_x)
         end as alpha_90d,
         case
             when beta_90d is not null
-            then (avg_y - (beta_90d * avg_x)) + (beta_90d * spy_ret)
+                then (avg_y - (beta_90d * avg_x)) + (beta_90d * spy_ret)
         end as expected_ret,
         case
             when beta_90d is not null
-            then stock_ret - ((avg_y - (beta_90d * avg_x)) + (beta_90d * spy_ret))
+                then stock_ret - ((avg_y - (beta_90d * avg_x)) + (beta_90d * spy_ret))
         end as daily_residual
     from regression_params
 ),
@@ -116,7 +117,7 @@ select
         cast(
             case
                 when res_obs_90d >= 30 and residual_90d_stddev > 1e-9
-                then daily_residual / residual_90d_stddev
+                    then daily_residual / residual_90d_stddev
                 else 0.0
             end as decimal(10, 4)
         ),

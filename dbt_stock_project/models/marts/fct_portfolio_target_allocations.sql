@@ -5,13 +5,15 @@ with active_bucket_stocks as (
         b.sector,
         b.current_bucket as assigned_bucket,
         cast(r.downside_semi_deviation as double) as downside_vol
-    from {{ ref('dim_stock_bucket_classification') }} b
-    inner join {{ ref('fct_stock_risk_metrics') }} r
-        on b.eval_date = r.eval_date
-       and b.ticker = r.ticker
-       and r.lookback_window_years = 5
-    where b.current_bucket in ('BUCKET_A_AGGRESSIVE', 'BUCKET_B_STEADY')
-      and r.downside_semi_deviation > 0
+    from {{ ref('dim_stock_bucket_classification') }} as b
+    inner join {{ ref('fct_stock_risk_metrics') }} as r
+        on
+            b.eval_date = r.eval_date
+            and b.ticker = r.ticker
+            and r.lookback_window_years = 5
+    where
+        b.current_bucket in ('BUCKET_A_AGGRESSIVE', 'BUCKET_B_STEADY')
+        and r.downside_semi_deviation > 0
 ),
 
 -- Benchmark sector weights across all active S&P 500 constituents at each month-end
@@ -20,12 +22,13 @@ benchmark_sectors as (
         cast(date_trunc('month', m.trade_date) as date) as eval_date,
         m.sector,
         count(distinct m.ticker) * 1.0
-            / nullif(sum(count(distinct m.ticker)) over (partition by date_trunc('month', m.trade_date)), 0)
+        / nullif(sum(count(distinct m.ticker)) over (partition by date_trunc('month', m.trade_date)), 0)
             as benchmark_sector_weight
-    from {{ ref('stg_sp500_historical_membership') }} m
-    inner join {{ ref('stg_trading_calendar') }} c
-        on m.trade_date = c.calendar_date
-       and c.is_month_end_trading_day = true
+    from {{ ref('stg_sp500_historical_membership') }} as m
+    inner join {{ ref('stg_trading_calendar') }} as c
+        on
+            m.trade_date = c.calendar_date
+            and c.is_month_end_trading_day = true
     where m.is_in_index = true
     group by date_trunc('month', m.trade_date), m.sector
 ),
@@ -35,10 +38,11 @@ month_end_macro as (
     select
         cast(date_trunc('month', r.trade_date) as date) as eval_date,
         r.regime_status
-    from {{ ref('stg_macro_regimes') }} r
-    inner join {{ ref('stg_trading_calendar') }} c
-        on r.trade_date = c.calendar_date
-       and c.is_month_end_trading_day = true
+    from {{ ref('stg_macro_regimes') }} as r
+    inner join {{ ref('stg_trading_calendar') }} as c
+        on
+            r.trade_date = c.calendar_date
+            and c.is_month_end_trading_day = true
 ),
 
 -- 1-year daily returns leading up to each eval_date for pairwise correlation clustering
@@ -49,11 +53,12 @@ candidate_daily_returns as (
         a.ticker,
         p.trade_date,
         cast(p.daily_return as double) as daily_ret
-    from active_bucket_stocks a
-    inner join {{ ref('stg_stock_prices_daily') }} p
-        on a.ticker = p.ticker
-       and p.trade_date <= (a.eval_date + interval '31 days')
-       and p.trade_date > (a.eval_date - interval '335 days')
+    from active_bucket_stocks as a
+    inner join {{ ref('stg_stock_prices_daily') }} as p
+        on
+            a.ticker = p.ticker
+            and p.trade_date <= (a.eval_date + interval '31 days')
+            and p.trade_date > (a.eval_date - interval '335 days')
     where p.daily_return is not null
 ),
 
@@ -71,12 +76,13 @@ pairwise_corr as (
             stddev_pop(r1.daily_ret) * stddev_pop(r2.daily_ret),
             0.0
         ) as corr_1y
-    from candidate_daily_returns r1
-    inner join candidate_daily_returns r2
-        on r1.eval_date = r2.eval_date
-       and r1.assigned_bucket = r2.assigned_bucket
-       and r1.trade_date = r2.trade_date
-       and r1.ticker <= r2.ticker
+    from candidate_daily_returns as r1
+    inner join candidate_daily_returns as r2
+        on
+            r1.eval_date = r2.eval_date
+            and r1.assigned_bucket = r2.assigned_bucket
+            and r1.trade_date = r2.trade_date
+            and r1.ticker <= r2.ticker
     group by
         r1.eval_date,
         r1.assigned_bucket,
@@ -124,10 +130,11 @@ cluster_sizes as (
         count(*) over (
             partition by a.eval_date, coalesce(c.correlation_cluster_id, 'CLUSTER_' || a.ticker)
         ) as cluster_member_count
-    from active_bucket_stocks a
-    left join clusters c
-        on a.eval_date = c.eval_date
-       and a.ticker = c.ticker
+    from active_bucket_stocks as a
+    left join clusters as c
+        on
+            a.eval_date = c.eval_date
+            and a.ticker = c.ticker
 ),
 
 -- Split inverse volatility across correlated cluster members and normalize to 100%
@@ -140,17 +147,18 @@ risk_parity_raw as (
         cs.inverse_downside_vol,
         cs.correlation_cluster_id,
         (cs.inverse_downside_vol / cs.cluster_member_count)
-            / nullif(
-                sum(cs.inverse_downside_vol / cs.cluster_member_count) over (partition by cs.eval_date),
-                0.0
-            ) as raw_risk_parity_weight,
+        / nullif(
+            sum(cs.inverse_downside_vol / cs.cluster_member_count) over (partition by cs.eval_date),
+            0.0
+        ) as raw_risk_parity_weight,
         coalesce(bs.benchmark_sector_weight, 0.10) as benchmark_sector_weight,
         coalesce(mm.regime_status, 'BULL_STABLE') as regime_status
-    from cluster_sizes cs
-    left join benchmark_sectors bs
-        on cs.eval_date = bs.eval_date
-       and cs.sector = bs.sector
-    left join month_end_macro mm
+    from cluster_sizes as cs
+    left join benchmark_sectors as bs
+        on
+            cs.eval_date = bs.eval_date
+            and cs.sector = bs.sector
+    left join month_end_macro as mm
         on cs.eval_date = mm.eval_date
 ),
 
@@ -161,7 +169,7 @@ sector_totals as (
         sum(
             case
                 when regime_status = 'BEAR_CONTRACTION' and assigned_bucket = 'BUCKET_A_AGGRESSIVE'
-                then 0.0
+                    then 0.0
                 else raw_risk_parity_weight
             end
         ) over (partition by eval_date, sector) as raw_sector_weight
@@ -180,10 +188,10 @@ capped_equities as (
         case
             -- Halt Aggressive Bucket during BEAR_CONTRACTION (Breadth < 30%)
             when regime_status = 'BEAR_CONTRACTION' and assigned_bucket = 'BUCKET_A_AGGRESSIVE'
-            then 0.0
+                then 0.0
             -- Scale down proportionally if sector exceeds (benchmark_sector_weight + 5%)
             when raw_sector_weight > (benchmark_sector_weight + 0.05) and raw_sector_weight > 0
-            then raw_risk_parity_weight * ((benchmark_sector_weight + 0.05) / raw_sector_weight)
+                then raw_risk_parity_weight * ((benchmark_sector_weight + 0.05) / raw_sector_weight)
             else raw_risk_parity_weight
         end as final_target_weight
     from sector_totals
@@ -206,7 +214,8 @@ spy_safe_harbor_fallback as (
 ),
 
 combined_allocations as (
-    select * from capped_equities where final_target_weight > 0
+    select * from capped_equities
+    where final_target_weight > 0
     union all
     select * from spy_safe_harbor_fallback
 )
@@ -223,4 +232,4 @@ select
     round(cast(final_target_weight * 0.80 as decimal(8, 6)), 6) as lower_tolerance_bound,
     round(cast(final_target_weight * 1.20 as decimal(8, 6)), 6) as upper_tolerance_bound
 from combined_allocations
-order by eval_date, final_target_weight desc, ticker
+order by eval_date asc, final_target_weight desc, ticker asc
