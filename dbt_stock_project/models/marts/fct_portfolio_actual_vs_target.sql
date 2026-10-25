@@ -127,9 +127,9 @@ select
     round(cast(current_shares_held as decimal(12, 4)), 4) as current_shares_held,
     round(cast(latest_close_price as decimal(12, 4)), 4) as latest_close_price,
     round(cast(position_market_value as decimal(14, 4)), 4) as position_market_value,
-    round(cast(actual_portfolio_weight as decimal(8, 6)), 6) as actual_portfolio_weight,
-    round(cast(target_portfolio_weight as decimal(8, 6)), 6) as target_portfolio_weight,
-    round(cast(relative_weight_drift as decimal(8, 6)), 6) as relative_weight_drift,
+    round(cast(actual_portfolio_weight as decimal(9, 6)), 6) as actual_portfolio_weight,
+    round(cast(target_portfolio_weight as decimal(9, 6)), 6) as target_portfolio_weight,
+    round(cast(relative_weight_drift as decimal(9, 6)), 6) as relative_weight_drift,
     is_tolerance_breached,
     active_macro_regime,
     case

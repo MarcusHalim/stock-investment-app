@@ -21,7 +21,7 @@ START_DATE = "2000-01-01"
 
 # Set SAMPLE_LIMIT = 30 for a fast ~20-second initial test run.
 # Set SAMPLE_LIMIT = None when you are ready to pull all 500+ S&P 500 tickers (~5-8 mins).
-SAMPLE_LIMIT = 30
+SAMPLE_LIMIT = None
 
 
 def init_bronze_schema(con: duckdb.DuckDBPyConnection) -> None:
