@@ -1,0 +1,10 @@
+{
+  "recommendations": [
+    "ms-python.python",
+    "innoverio.vscode-dbt-power-user",
+    "dorzey.vscode-sqlfluff",
+    "charliermarsh.ruff",
+    "eamodio.gitlens",
+    "snowflake.snowflake-vsc"
+  ]
+}

@@ -24,7 +24,7 @@ dbt_stock_project/logs/
 *.key
 
 # IDE & OS Files
-.vscode/
+# .vscode/
 .idea/
 .DS_Store
 Thumbs.db
