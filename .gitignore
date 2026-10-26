@@ -15,7 +15,7 @@ data/*.csv
 dbt_stock_project/target/
 dbt_stock_project/dbt_packages/
 dbt_stock_project/logs/
-profiles.yml
+# profiles.yml #Excluded from gitignore to allow for committing to github. If profiles.yml includes api keys or access credentials, include it in gitignore to prevent those from being exposed publicly.
 
 # Environment Variables & Secrets
 .env

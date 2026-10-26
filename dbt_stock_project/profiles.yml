@@ -1,0 +1,8 @@
+dbt_stock_project:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "data/stock_app_dev.duckdb"
+      schema: main
+      threads: 8
