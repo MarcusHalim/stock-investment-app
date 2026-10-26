@@ -147,6 +147,12 @@ with st.sidebar:
             else:
                 st.error("dbt run encountered an error.")
                 st.code(logs)
+    st.divider()
+    st.caption(
+        "⚠️ **Disclaimer:** This application is an educational data engineering and "
+        "quantitative analytics showcase. It is strictly an advisory decision-support "
+        "tool and does not constitute financial or investment advice."
+    )
 
 
 # ==========================================
