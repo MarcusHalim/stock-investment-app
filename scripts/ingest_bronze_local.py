@@ -3,10 +3,11 @@ Phase 1 Local Bronze Ingestion Script (DuckDB + yfinance + Wikipedia).
 Idempotently creates the 4 Bronze tables and loads initial development data.
 """
 
-import uuid
+import argparse
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
+import uuid
 
 import duckdb
 import pandas as pd
@@ -19,9 +20,8 @@ import yfinance as yf
 DB_PATH = Path("data/stock_app_dev.duckdb")
 START_DATE = "2000-01-01"
 
-# Set SAMPLE_LIMIT = 30 for a fast ~20-second initial test run.
-# Set SAMPLE_LIMIT = None when you are ready to pull all 500+ S&P 500 tickers (~5-8 mins).
-SAMPLE_LIMIT = None
+# Default fallback when no CLI flag is provided (None = full S&P 500 universe).
+SAMPLE_LIMIT: int | None = None
 
 
 def init_bronze_schema(con: duckdb.DuckDBPyConnection) -> None:
@@ -158,12 +158,16 @@ def ingest_macro_indicators(con: duckdb.DuckDBPyConnection) -> None:
     print(f"[OK] Loaded {len(close_df)} daily rows into bronze_macro_indicators.")
 
 
-def ingest_stock_prices(con: duckdb.DuckDBPyConnection, tickers: list[str]) -> None:
+def ingest_stock_prices(
+    con: duckdb.DuckDBPyConnection,
+    tickers: list[str],
+    sample_limit: int | None = None,
+) -> None:
     """Downloads unadjusted daily OHLCV, splits, and dividends for constituent tickers."""
-    target_tickers = tickers[:SAMPLE_LIMIT] if SAMPLE_LIMIT else tickers
+    target_tickers = tickers[:sample_limit] if sample_limit else tickers
     print(
         f"Downloading daily prices, splits, and dividends for {len(target_tickers)} tickers "
-        f"(SAMPLE_LIMIT={SAMPLE_LIMIT})..."
+        f"(sample_limit={sample_limit})..."
     )
 
     raw = yf.download(
@@ -291,13 +295,40 @@ def verify_counts(con: duckdb.DuckDBPyConnection) -> None:
         print(f"{tbl:<30} : {cnt:>10,} rows")
 
 
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for sample vs. full S&P 500 ingestion."""
+    parser = argparse.ArgumentParser(
+        description="Ingest S&P 500 constituents, macro indicators, and daily stock prices into DuckDB Bronze."
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--sample",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Ingest only the first N S&P 500 tickers for a fast quickstart (e.g., --sample 30).",
+    )
+    group.add_argument(
+        "--full",
+        action="store_true",
+        help="Ingest all 503 S&P 500 constituents (default if no flag is passed).",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
+    sample_limit = (
+        None
+        if args.full
+        else (args.sample if args.sample is not None else SAMPLE_LIMIT)
+    )
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with duckdb.connect(str(DB_PATH)) as con:
         init_bronze_schema(con)
         tickers = ingest_sp500_constituents(con)
         ingest_macro_indicators(con)
-        ingest_stock_prices(con, tickers)
+        ingest_stock_prices(con, tickers, sample_limit=sample_limit)
         seed_initial_manual_execution(con)
         verify_counts(con)
 
