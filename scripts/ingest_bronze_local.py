@@ -4,10 +4,10 @@ Idempotently creates the 4 Bronze tables and loads initial development data.
 """
 
 import argparse
+import uuid
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
-import uuid
 
 import duckdb
 import pandas as pd
