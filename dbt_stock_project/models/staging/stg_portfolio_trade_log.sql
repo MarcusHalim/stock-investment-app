@@ -1,6 +1,10 @@
 with raw_executions as (
     select
         execution_id,
+        coalesce(
+            nullif(upper(trim(strategy_id)), ''),
+            'STRAT_DEFAULT_BARBELL'
+        ) as strategy_id,
         trade_date,
         upper(trim(ticker)) as ticker,
         upper(trim(action)) as action,
@@ -12,6 +16,7 @@ with raw_executions as (
 
 select
     execution_id,
+    strategy_id,
     trade_date,
     ticker,
     action,

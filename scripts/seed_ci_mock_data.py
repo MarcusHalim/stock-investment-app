@@ -1,131 +1,241 @@
-"""
-Deterministic Bronze Layer Mock Seeder for CI/CD Integration Testing.
-Populates 6 years of synthetic daily data so dbt build can validate all 3y and 5y models.
+"""Deterministic mock data seeder for ephemeral CI/CD runners.
+
+Populates DuckDB Bronze tables (including SPXL, ^IRX, strategy_id, and
+multi-strategy metadata tables) without external network calls.
 """
 
-import uuid
-from datetime import UTC, date, datetime
+from __future__ import annotations
+
+from datetime import date, datetime
 from pathlib import Path
 
 import duckdb
+import numpy as np
 import pandas as pd
-from ingest_bronze_local import init_bronze_schema
 
 DB_PATH = Path("data/stock_app_dev.duckdb")
 
 
 def seed_ci_database() -> None:
-    """Seeds synthetic Bronze data into a fresh DuckDB instance for CI testing."""
+    """Create and populate deterministic Bronze tables for CI testing."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    now_ts = datetime.now(UTC).replace(tzinfo=None)
+    rng = np.random.default_rng(42)
+    now_ts = datetime(2026, 1, 1, 12, 0, 0)
 
-    # Generate business days across 6+ years (ensures >60 months for 5-year rolling windows)
-    b_days = pd.date_range(start="2019-01-01", end="2026-02-01", freq="B")
+    dates = pd.bdate_range(start="2015-01-01", end="2025-12-31")
+    n_days = len(dates)
 
-    with duckdb.connect(str(DB_PATH)) as con:
-        init_bronze_schema(con)
+    spy_rets = rng.normal(0.0004, 0.009, size=n_days)
+    spy_close = 200.0 * np.cumprod(1.0 + spy_rets)
+    rfr_annual = np.full(n_days, 0.03)
+    spxl_rets = 3.0 * spy_rets - 2.0 * (rfr_annual / 252.0) - (0.0095 / 252.0)
+    spxl_close = 50.0 * np.cumprod(1.0 + spxl_rets)
+    vix_close = np.clip(rng.normal(18.0, 4.0, size=n_days), 10.0, 45.0)
 
-        # 1. Seed bronze_sp500_constituents
-        constituents_df = pd.DataFrame(
-            [
+    macro_df = pd.DataFrame(
+        {
+            "trade_date": dates.date,
+            "vix_close": np.round(vix_close, 4),
+            "spy_close": np.round(spy_close, 4),
+            "spxl_close": np.round(spxl_close, 4),
+            "risk_free_rate_annual": np.round(rfr_annual, 6),
+            "_ingested_at": now_ts,
+        }
+    )
+
+    tickers_meta = [
+        ("AAPL", "Apple Inc.", "Information Technology", "Technology Hardware"),
+        ("MSFT", "Microsoft Corp.", "Information Technology", "Systems Software"),
+        ("NVDA", "NVIDIA Corp.", "Information Technology", "Semiconductors"),
+        ("JNJ", "Johnson & Johnson", "Health Care", "Pharmaceuticals"),
+        ("PG", "Procter & Gamble", "Consumer Staples", "Household Products"),
+        ("JPM", "JPMorgan Chase", "Financials", "Diversified Banks"),
+    ]
+
+    constituents_df = pd.DataFrame(
+        [
+            {
+                "ticker": t,
+                "company_name": name,
+                "sector": sec,
+                "sub_industry": sub,
+                "date_added": date(2000, 1, 1),
+                "date_removed": None,
+                "_ingested_at": now_ts,
+            }
+            for t, name, sec, sub in tickers_meta
+        ]
+    )
+
+    price_frames: list[pd.DataFrame] = []
+    for idx, (ticker, _, _, _) in enumerate(tickers_meta):
+        beta = 1.35 if idx < 3 else 0.65
+        alpha = 0.0003 if idx < 3 else 0.0002
+        idio_noise = rng.normal(0.0, 0.006 if idx < 3 else 0.004, size=n_days)
+        stock_rets = alpha + beta * spy_rets + idio_noise
+        closes = 100.0 * np.cumprod(1.0 + stock_rets)
+
+        price_frames.append(
+            pd.DataFrame(
                 {
-                    "ticker": "AAPL",
-                    "company_name": "Apple Inc.",
-                    "sector": "Information Technology",
-                    "sub_industry": "Technology Hardware",
-                    "date_added": date(1990, 1, 1),
-                    "date_removed": None,
-                    "_ingested_at": now_ts,
-                },
-                {
-                    "ticker": "JNJ",
-                    "company_name": "Johnson & Johnson",
-                    "sector": "Health Care",
-                    "sub_industry": "Pharmaceuticals",
-                    "date_added": date(1990, 1, 1),
-                    "date_removed": None,
-                    "_ingested_at": now_ts,
-                },
-            ]
-        )
-        con.register("df_const", constituents_df)
-        con.execute("""
-            INSERT OR REPLACE INTO bronze.bronze_sp500_constituents
-            SELECT
-                ticker,
-                company_name,
-                sector,
-                sub_industry,
-                date_added,
-                CAST(date_removed AS DATE),
-                _ingested_at
-            FROM df_const;
-        """)
-        con.unregister("df_const")
-
-        # 2. Seed bronze_macro_indicators
-        macro_rows = []
-        spy_price = 250.0
-        for i, dt in enumerate(b_days):
-            # Alternate slight up/down drift so both Up-Market and Down-Market months exist
-            daily_drift = 0.0006 if (i % 7 != 0) else -0.0025
-            spy_price = round(spy_price * (1.0 + daily_drift), 4)
-            macro_rows.append(
-                {
-                    "trade_date": dt.date(),
-                    "vix_close": 16.5000,
-                    "spy_close": spy_price,
+                    "ticker": ticker,
+                    "trade_date": dates.date,
+                    "open_price": np.round(closes * 0.998, 4),
+                    "high_price": np.round(closes * 1.005, 4),
+                    "low_price": np.round(closes * 0.995, 4),
+                    "close_price": np.round(closes, 4),
+                    "volume": 1_000_000,
+                    "split_factor": 1.0,
+                    "dividend_amount": 0.0,
                     "_ingested_at": now_ts,
                 }
             )
-        macro_df = pd.DataFrame(macro_rows)
+        )
+
+    prices_df = pd.concat(price_frames, ignore_index=True)
+
+    executions_df = pd.DataFrame(
+        [
+            {
+                "execution_id": "CI_EXEC_001",
+                "strategy_id": "STRAT_DEFAULT_BARBELL",
+                "trade_date": date(2025, 1, 15),
+                "ticker": "MSFT",
+                "action": "BUY",
+                "shares_executed": 10.0,
+                "fill_price": 400.0,
+                "notes": "Initial CI seed trade",
+                "_created_at": now_ts,
+            }
+        ]
+    )
+
+    strategies_df = pd.DataFrame(
+        [
+            {
+                "strategy_id": "STRAT_DEFAULT_BARBELL",
+                "strategy_name": "Core Multi-Factor Barbell",
+                "strategy_description": "Default two-bucket barbell strategy.",
+                "is_active": True,
+                "portfolio_weight": 0.70,
+                "lookback_window_years": 5,
+                "rebalance_band_pct": 0.20,
+                "sector_cap_excess_pct": 0.05,
+                "corr_cluster_threshold": 0.75,
+                "halt_on_high_vol": True,
+                "_updated_at": now_ts,
+            },
+            {
+                "strategy_id": "STRAT_DEFENSIVE_QUALITY",
+                "strategy_name": "Defensive Capital Compounder",
+                "strategy_description": "Low-volatility capital preservation strategy.",
+                "is_active": True,
+                "portfolio_weight": 0.30,
+                "lookback_window_years": 5,
+                "rebalance_band_pct": 0.20,
+                "sector_cap_excess_pct": 0.05,
+                "corr_cluster_threshold": 0.75,
+                "halt_on_high_vol": True,
+                "_updated_at": now_ts,
+            },
+        ]
+    )
+
+    buckets_df = pd.DataFrame(
+        [
+            {
+                "strategy_id": "STRAT_DEFAULT_BARBELL",
+                "bucket_id": "BUCKET_B_STEADY",
+                "bucket_name": "Steady Low-Vol Compounders",
+                "priority_rank": 1,
+                "bucket_target_share": 0.60,
+                "min_tenure_years": 10.0,
+                "min_sortino_entry": 0.35,
+                "min_sortino_exit": 0.15,
+                "max_down_capture_entry": 0.90,
+                "max_down_capture_exit": 1.00,
+                "min_up_capture_entry": 0.00,
+                "min_up_capture_exit": 0.00,
+                "min_info_ratio_entry": -9.99,
+                "min_info_ratio_exit": -9.99,
+                "max_drawdown_entry": -0.50,
+                "max_drawdown_exit": -0.55,
+                "weighting_scheme": "RISK_PARITY",
+                "route_to_spy_in_bear": False,
+                "_updated_at": now_ts,
+            },
+            {
+                "strategy_id": "STRAT_DEFAULT_BARBELL",
+                "bucket_id": "BUCKET_A_AGGRESSIVE",
+                "bucket_name": "Aggressive Upside Growth",
+                "priority_rank": 2,
+                "bucket_target_share": 0.40,
+                "min_tenure_years": 5.0,
+                "min_sortino_entry": 0.00,
+                "min_sortino_exit": -0.50,
+                "max_down_capture_entry": 9.99,
+                "max_down_capture_exit": 9.99,
+                "min_up_capture_entry": 1.15,
+                "min_up_capture_exit": 1.05,
+                "min_info_ratio_entry": 0.25,
+                "min_info_ratio_exit": 0.05,
+                "max_drawdown_entry": -0.99,
+                "max_drawdown_exit": -0.99,
+                "weighting_scheme": "RISK_PARITY",
+                "route_to_spy_in_bear": True,
+                "_updated_at": now_ts,
+            },
+            {
+                "strategy_id": "STRAT_DEFENSIVE_QUALITY",
+                "bucket_id": "BUCKET_DEF_CORE",
+                "bucket_name": "Fortress Low-Drawdown Core",
+                "priority_rank": 1,
+                "bucket_target_share": 1.00,
+                "min_tenure_years": 10.0,
+                "min_sortino_entry": 0.50,
+                "min_sortino_exit": 0.25,
+                "max_down_capture_entry": 0.80,
+                "max_down_capture_exit": 0.90,
+                "min_up_capture_entry": 0.70,
+                "min_up_capture_exit": 0.60,
+                "min_info_ratio_entry": 0.10,
+                "min_info_ratio_exit": -0.10,
+                "max_drawdown_entry": -0.35,
+                "max_drawdown_exit": -0.45,
+                "weighting_scheme": "RISK_PARITY",
+                "route_to_spy_in_bear": False,
+                "_updated_at": now_ts,
+            },
+        ]
+    )
+
+    with duckdb.connect(str(DB_PATH)) as con:
+        con.execute("CREATE SCHEMA IF NOT EXISTS bronze;")
         con.register("df_macro", macro_df)
-        con.execute(
-            "INSERT OR REPLACE INTO bronze.bronze_macro_indicators SELECT * FROM df_macro;"
-        )
-        con.unregister("df_macro")
-
-        # 3. Seed bronze_stock_prices_daily
-        price_rows = []
-        for ticker, base_p, mult in [("AAPL", 100.0, 1.25), ("JNJ", 130.0, 0.75)]:
-            curr_p = base_p
-            for i, dt in enumerate(b_days):
-                base_ret = 0.0007 if (i % 7 != 0) else -0.0020
-                stock_ret = base_ret * mult
-                curr_p = round(curr_p * (1.0 + stock_ret), 4)
-                price_rows.append(
-                    {
-                        "ticker": ticker,
-                        "trade_date": dt.date(),
-                        "open_price": curr_p,
-                        "high_price": round(curr_p * 1.005, 4),
-                        "low_price": round(curr_p * 0.995, 4),
-                        "close_price": curr_p,
-                        "volume": 1000000,
-                        "split_factor": 1.0,
-                        "dividend_amount": 0.0,
-                        "_ingested_at": now_ts,
-                    }
-                )
-        prices_df = pd.DataFrame(price_rows)
+        con.register("df_const", constituents_df)
         con.register("df_prices", prices_df)
-        con.execute(
-            "INSERT OR REPLACE INTO bronze.bronze_stock_prices_daily SELECT * FROM df_prices;"
-        )
-        con.unregister("df_prices")
+        con.register("df_exec", executions_df)
+        con.register("df_strat", strategies_df)
+        con.register("df_buckets", buckets_df)
 
-        # 4. Seed bronze_manual_executions
         con.execute(
-            """
-            INSERT OR REPLACE INTO bronze.bronze_manual_executions VALUES (
-                ?, DATE '2026-01-02', 'SPY', 'BUY', 10.0000, 500.0000,
-                'CI mock seed trade', ?
-            );
-            """,
-            [str(uuid.uuid4()), now_ts],
+            "CREATE OR REPLACE TABLE bronze.bronze_macro_indicators AS SELECT * FROM df_macro;"
         )
-
-    print("[OK] CI mock Bronze database seeded successfully.")
+        con.execute(
+            "CREATE OR REPLACE TABLE bronze.bronze_sp500_constituents AS SELECT * FROM df_const;"
+        )
+        con.execute(
+            "CREATE OR REPLACE TABLE bronze.bronze_stock_prices_daily AS SELECT * FROM df_prices;"
+        )
+        con.execute(
+            "CREATE OR REPLACE TABLE bronze.bronze_manual_executions AS SELECT * FROM df_exec;"
+        )
+        con.execute(
+            "CREATE OR REPLACE TABLE bronze.bronze_strategies AS SELECT * FROM df_strat;"
+        )
+        con.execute(
+            "CREATE OR REPLACE TABLE bronze.bronze_strategy_buckets AS SELECT * FROM df_buckets;"
+        )
 
 
 if __name__ == "__main__":

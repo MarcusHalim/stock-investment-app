@@ -48,13 +48,16 @@ models:
           - not_null
 
   - name: stg_macro_regimes
-    description: "Daily macro indicators (SPY, VIX, Market Breadth) and derived regime classification."
+    description: "Daily macro indicators (SPY, 3x SPXL spliced, Risk-Free Rate, VIX, Breadth) and regime status."
     columns:
       - name: trade_date
         tests:
           - unique
           - not_null
       - name: spy_close
+        tests:
+          - not_null
+      - name: risk_free_rate_annual
         tests:
           - not_null
       - name: regime_status
@@ -64,11 +67,14 @@ models:
               values: ['BULL_STABLE', 'HIGH_VOLATILITY', 'BEAR_CONTRACTION']
 
   - name: stg_portfolio_trade_log
-    description: "Cleaned and signed manual portfolio trade executions."
+    description: "Cleaned and signed manual portfolio trade executions with strategy attribution."
     columns:
       - name: execution_id
         tests:
           - unique
+          - not_null
+      - name: strategy_id
+        tests:
           - not_null
       - name: ticker
         tests:

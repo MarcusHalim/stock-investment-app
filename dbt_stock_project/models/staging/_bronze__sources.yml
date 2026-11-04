@@ -2,7 +2,7 @@ version: 2
 
 sources:
   - name: bronze
-    description: "Raw append-only tables ingested into the Bronze schema."
+    description: "Raw append-only and metadata tables ingested into the Bronze schema."
     schema: bronze
     tables:
       - name: bronze_stock_prices_daily
@@ -29,13 +29,16 @@ sources:
               - not_null
 
       - name: bronze_macro_indicators
-        description: "Daily benchmark SPY close and CBOE VIX volatility index close."
+        description: "Daily benchmark SPY, VIX, SPXL, and 13-week T-Bill risk-free rate."
         columns:
           - name: trade_date
             tests:
               - unique
               - not_null
           - name: spy_close
+            tests:
+              - not_null
+          - name: risk_free_rate_annual
             tests:
               - not_null
 
@@ -45,4 +48,34 @@ sources:
           - name: execution_id
             tests:
               - unique
+              - not_null
+          - name: strategy_id
+            tests:
+              - not_null
+
+      - name: bronze_strategies
+        description: "Governed metadata registry of custom investment strategies."
+        columns:
+          - name: strategy_id
+            tests:
+              - unique
+              - not_null
+          - name: strategy_name
+            tests:
+              - not_null
+          - name: is_active
+            tests:
+              - not_null
+
+      - name: bronze_strategy_buckets
+        description: "Custom bucket definitions, hysteresis bands, and protocols per strategy."
+        columns:
+          - name: strategy_id
+            tests:
+              - not_null
+          - name: bucket_id
+            tests:
+              - not_null
+          - name: bucket_target_share
+            tests:
               - not_null
