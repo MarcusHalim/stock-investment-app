@@ -1,8 +1,40 @@
 version: 2
 
 models:
+  - name: dim_strategies
+    description: "Governed dimension of custom investment strategies and normalized portfolio weights."
+    columns:
+      - name: strategy_id
+        tests:
+          - unique
+          - not_null
+      - name: strategy_name
+        tests:
+          - not_null
+      - name: normalized_portfolio_weight
+        tests:
+          - not_null
+
+  - name: dim_strategy_buckets
+    description: "Custom bucket filter thresholds, hysteresis bands, and position-sizing protocols per strategy."
+    columns:
+      - name: strategy_id
+        tests:
+          - not_null
+      - name: bucket_id
+        tests:
+          - not_null
+      - name: bucket_target_share
+        tests:
+          - not_null
+      - name: weighting_scheme
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['RISK_PARITY', 'EQUAL_WEIGHT']
+
   - name: fct_stock_returns_monthly
-    description: "Monthly total returns for equities and SPY benchmark, plus active excess returns."
+    description: "Monthly total returns for equities, SPY, and 3x SPXL benchmarks, plus active excess returns."
     columns:
       - name: year_month
         tests:
@@ -14,6 +46,9 @@ models:
         tests:
           - not_null
       - name: spy_return_monthly
+        tests:
+          - not_null
+      - name: spxl_return_monthly
         tests:
           - not_null
       - name: excess_return_monthly
@@ -46,7 +81,7 @@ models:
           - not_null
 
   - name: fct_stock_risk_metrics
-    description: "Rolling 3y, 5y, and 10y Sortino, Downside Semi-Deviation, Max Drawdown, and Capture Ratios."
+    description: "Rolling 3y, 5y, and 10y Sortino, Downside Semi-Deviation, Max Drawdown, CAGR, and Capture Ratios."
     columns:
       - name: eval_date
         tests:
@@ -70,8 +105,11 @@ models:
           - not_null
 
   - name: dim_stock_bucket_classification
-    description: "Hysteresis-buffered classification of equities into Aggressive and Steady barbell buckets."
+    description: "Multi-strategy hysteresis-buffered classification of equities into custom strategy buckets."
     columns:
+      - name: strategy_id
+        tests:
+          - not_null
       - name: eval_date
         tests:
           - not_null
@@ -86,15 +124,16 @@ models:
       - name: current_bucket
         tests:
           - not_null
-          - accepted_values:
-              values: ['BUCKET_A_AGGRESSIVE', 'BUCKET_B_STEADY', 'UNASSIGNED']
       - name: is_structural_drift_flag
         tests:
           - not_null
 
   - name: fct_portfolio_target_allocations
-    description: "Risk-parity target weights with correlation clustering, sector caps, and SPY fallback."
+    description: "Multi-strategy target weights with correlation clustering, sector caps, and SPY fallback."
     columns:
+      - name: strategy_id
+        tests:
+          - not_null
       - name: eval_date
         tests:
           - not_null
@@ -104,14 +143,15 @@ models:
       - name: assigned_bucket
         tests:
           - not_null
-          - accepted_values:
-              values: ['BUCKET_A_AGGRESSIVE', 'BUCKET_B_STEADY', 'SAFE_HARBOR_SPY']
-      - name: final_target_weight
+      - name: strategy_target_weight
+        tests:
+          - not_null
+      - name: portfolio_target_weight
         tests:
           - not_null
 
   - name: fct_portfolio_actual_vs_target
-    description: "Reconciles manual trade holdings against target weights and generates the Action Order Sheet."
+    description: "Cross-strategy netted portfolio holdings vs. blended target weights and Action Order Sheet."
     columns:
       - name: as_of_date
         tests:

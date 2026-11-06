@@ -1,128 +1,209 @@
-with month_end_membership as (
+with strategies as (
     select
-        cast(date_trunc('month', m.trade_date) as date) as eval_date,
-        m.ticker,
-        m.sector,
-        m.is_in_index,
-        m.years_since_first_ingest
-    from {{ ref('stg_sp500_historical_membership') }} as m
-    inner join {{ ref('stg_trading_calendar') }} as c
-        on
-            m.trade_date = c.calendar_date
-            and c.is_month_end_trading_day = true
-    where m.is_in_index = true
+        strategy_id,
+        lookback_window_years
+    from {{ ref('dim_strategies') }}
 ),
 
-risk_5y as (
+buckets as (
     select
-        eval_date,
+        strategy_id,
+        bucket_id,
+        bucket_name,
+        priority_rank,
+        cast(min_tenure_years as double) as min_tenure_years,
+        cast(min_sortino_entry as double) as min_sortino_entry,
+        cast(min_sortino_exit as double) as min_sortino_exit,
+        cast(max_down_capture_entry as double) as max_down_capture_entry,
+        cast(max_down_capture_exit as double) as max_down_capture_exit,
+        cast(min_up_capture_entry as double) as min_up_capture_entry,
+        cast(min_up_capture_exit as double) as min_up_capture_exit,
+        cast(min_info_ratio_entry as double) as min_info_ratio_entry,
+        cast(min_info_ratio_exit as double) as min_info_ratio_exit,
+        cast(max_drawdown_entry as double) as max_drawdown_entry,
+        cast(max_drawdown_exit as double) as max_drawdown_exit
+    from {{ ref('dim_strategy_buckets') }}
+),
+
+risk_metrics as (
+    select
+        s.strategy_id,
+        r.eval_date,
+        r.ticker,
+        cast(r.sortino_ratio as double) as sortino_ratio,
+        cast(r.information_ratio as double) as information_ratio,
+        cast(r.up_market_capture as double) as up_market_capture,
+        cast(r.down_market_capture as double) as down_market_capture,
+        cast(r.max_drawdown as double) as max_drawdown,
+        cast(r.downside_semi_deviation as double) as downside_semi_deviation
+    from strategies s
+    inner join {{ ref('fct_stock_risk_metrics') }} r
+        on s.lookback_window_years = r.lookback_window_years
+),
+
+membership_tenure as (
+    select
+        trade_date as eval_date,
         ticker,
-        information_ratio,
-        sortino_ratio,
-        max_drawdown,
-        up_market_capture,
-        down_market_capture,
-        down_capture_sma_50w,
-        down_capture_sma_200w
-    from {{ ref('fct_stock_risk_metrics') }}
-    where lookback_window_years = 5
+        sector,
+        cast(years_since_first_ingest as double) as years_tenure
+    from {{ ref('stg_sp500_historical_membership') }}
+    where is_in_index = true
 ),
 
-raw_eligibility as (
+joined_features as (
     select
+        m.strategy_id,
         m.eval_date,
         m.ticker,
-        m.sector,
+        coalesce(t.sector, 'Unclassified') as sector,
+        coalesce(t.years_tenure, 0.0) as years_tenure,
         case
-            when m.years_since_first_ingest < 5.0 then 'EXCLUDED'
-            when m.years_since_first_ingest < 10.0 then 'EMERGING'
+            when coalesce(t.years_tenure, 0.0) < 5.0 then 'EXCLUDED'
+            when coalesce(t.years_tenure, 0.0) < 10.0 then 'EMERGING'
             else 'MATURE'
         end as ipo_tenure_tier,
-        r.information_ratio,
-        r.sortino_ratio,
-        r.max_drawdown,
-        r.up_market_capture,
-        r.down_market_capture,
-        r.down_capture_sma_50w,
-        r.down_capture_sma_200w,
-        -- Strict Entry Candidate Classification
-        case
-            when
-                m.years_since_first_ingest >= 10.0
-                and r.sortino_ratio >= 0.35
-                and r.down_market_capture <= 0.90
-                and r.max_drawdown >= -0.50
-                then 'BUCKET_B_STEADY'
-            when
-                m.years_since_first_ingest >= 5.0
-                and r.up_market_capture >= 1.15
-                and r.information_ratio >= 0.25
-                then 'BUCKET_A_AGGRESSIVE'
-            else 'UNASSIGNED'
-        end as entry_candidate_bucket
-    from month_end_membership as m
-    inner join risk_5y as r
-        on
-            m.eval_date = r.eval_date
-            and m.ticker = r.ticker
+        m.sortino_ratio,
+        m.information_ratio,
+        m.up_market_capture,
+        m.down_market_capture,
+        m.max_drawdown,
+        m.downside_semi_deviation,
+        avg(m.down_market_capture) over (
+            partition by m.strategy_id, m.ticker
+            order by m.eval_date
+            rows between 11 preceding and current row
+        ) as down_capture_sma_50w,
+        avg(m.down_market_capture) over (
+            partition by m.strategy_id, m.ticker
+            order by m.eval_date
+            rows between 47 preceding and current row
+        ) as down_capture_sma_200w
+    from risk_metrics m
+    inner join membership_tenure t
+        on m.eval_date = t.eval_date
+        and m.ticker = t.ticker
 ),
 
-prior_state as (
+bucket_candidates as (
+    select
+        f.strategy_id,
+        f.eval_date,
+        f.ticker,
+        b.bucket_id,
+        b.priority_rank,
+        coalesce(
+            f.years_tenure >= b.min_tenure_years
+            and f.sortino_ratio >= b.min_sortino_entry
+            and f.down_market_capture <= b.max_down_capture_entry
+            and f.up_market_capture >= b.min_up_capture_entry
+            and f.information_ratio >= b.min_info_ratio_entry
+            and f.max_drawdown >= b.max_drawdown_entry,
+            false
+        ) as passes_entry,
+        coalesce(
+            f.years_tenure >= b.min_tenure_years
+            and f.sortino_ratio >= b.min_sortino_exit
+            and f.down_market_capture <= b.max_down_capture_exit
+            and f.up_market_capture >= b.min_up_capture_exit
+            and f.information_ratio >= b.min_info_ratio_exit
+            and f.max_drawdown >= b.max_drawdown_exit,
+            false
+        ) as passes_exit_hold
+    from joined_features f
+    inner join buckets b
+        on f.strategy_id = b.strategy_id
+),
+
+cand_with_lag as (
+    select
+        strategy_id,
+        eval_date,
+        ticker,
+        bucket_id,
+        priority_rank,
+        passes_entry,
+        passes_exit_hold,
+        coalesce(
+            lag(passes_entry) over (
+                partition by strategy_id, ticker, bucket_id
+                order by eval_date
+            ),
+            false
+        ) as prev_passes_entry
+    from bucket_candidates
+),
+
+qualified_buckets as (
+    select
+        strategy_id,
+        eval_date,
+        ticker,
+        bucket_id,
+        priority_rank
+    from cand_with_lag
+    where
+        passes_entry = true
+        or (prev_passes_entry = true and passes_exit_hold = true)
+    qualify row_number() over (
+        partition by strategy_id, eval_date, ticker
+        order by priority_rank asc, bucket_id asc
+    ) = 1
+),
+
+classified_equities as (
+    select
+        f.strategy_id,
+        f.eval_date,
+        f.ticker,
+        f.sector,
+        f.ipo_tenure_tier,
+        f.sortino_ratio,
+        f.information_ratio,
+        f.up_market_capture,
+        f.down_market_capture,
+        f.max_drawdown,
+        f.downside_semi_deviation,
+        f.down_capture_sma_50w,
+        f.down_capture_sma_200w,
+        coalesce(q.bucket_id, 'UNASSIGNED') as current_bucket
+    from joined_features f
+    left join qualified_buckets q
+        on f.strategy_id = q.strategy_id
+        and f.eval_date = q.eval_date
+        and f.ticker = q.ticker
+),
+
+with_prior_bucket as (
     select
         *,
         coalesce(
-            lag(entry_candidate_bucket) over (
-                partition by ticker
+            lag(current_bucket) over (
+                partition by strategy_id, ticker
                 order by eval_date
             ),
             'UNASSIGNED'
         ) as prior_bucket
-    from raw_eligibility
-),
-
-hysteresis_evaluated as (
-    select
-        eval_date,
-        ticker,
-        sector,
-        ipo_tenure_tier,
-        prior_bucket,
-        case
-            -- 1. If it qualifies on strict entry criteria, assign directly
-            when entry_candidate_bucket != 'UNASSIGNED'
-                then entry_candidate_bucket
-            -- 2. Hysteresis retention for BUCKET_B_STEADY (buffer zone before eviction)
-            when
-                prior_bucket = 'BUCKET_B_STEADY'
-                and ipo_tenure_tier = 'MATURE'
-                and sortino_ratio >= 0.15
-                and down_market_capture <= 1.00
-                and max_drawdown >= -0.55
-                then 'BUCKET_B_STEADY'
-            -- 3. Hysteresis retention for BUCKET_A_AGGRESSIVE (buffer zone before eviction)
-            when
-                prior_bucket = 'BUCKET_A_AGGRESSIVE'
-                and ipo_tenure_tier in ('EMERGING', 'MATURE')
-                and up_market_capture >= 1.05
-                and information_ratio >= 0.05
-                then 'BUCKET_A_AGGRESSIVE'
-            else 'UNASSIGNED'
-        end as current_bucket,
-        -- Flag structural drift if 50w Down-Capture degrades significantly above 200w baseline
-        coalesce(
-            down_capture_sma_50w > (down_capture_sma_200w + 0.10),
-            false
-        ) as is_structural_drift_flag
-    from prior_state
+    from classified_equities
 )
 
 select
+    strategy_id,
     eval_date,
     ticker,
     sector,
     ipo_tenure_tier,
     prior_bucket,
     current_bucket,
-    is_structural_drift_flag
-from hysteresis_evaluated
-order by eval_date, ticker
+    round(cast(sortino_ratio as decimal(10, 4)), 4) as sortino_ratio,
+    round(cast(information_ratio as decimal(10, 4)), 4) as information_ratio,
+    round(cast(up_market_capture as decimal(10, 4)), 4) as up_market_capture,
+    round(cast(down_market_capture as decimal(10, 4)), 4) as down_market_capture,
+    round(cast(max_drawdown as decimal(10, 6)), 6) as max_drawdown,
+    round(cast(downside_semi_deviation as decimal(10, 6)), 6) as downside_semi_deviation,
+    coalesce(
+        (down_capture_sma_50w - down_capture_sma_200w) > 0.10,
+        false
+    ) as is_structural_drift_flag
+from with_prior_bucket
+order by strategy_id, eval_date, ticker

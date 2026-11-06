@@ -1,235 +1,359 @@
-with active_bucket_stocks as (
+with strategies as (
     select
-        b.eval_date,
-        b.ticker,
-        b.sector,
-        b.current_bucket as assigned_bucket,
-        cast(r.downside_semi_deviation as double) as downside_vol
-    from {{ ref('dim_stock_bucket_classification') }} as b
-    inner join {{ ref('fct_stock_risk_metrics') }} as r
-        on
-            b.eval_date = r.eval_date
-            and b.ticker = r.ticker
-            and r.lookback_window_years = 5
-    where
-        b.current_bucket in ('BUCKET_A_AGGRESSIVE', 'BUCKET_B_STEADY')
-        and r.downside_semi_deviation > 0
+        strategy_id,
+        is_active,
+        cast(normalized_portfolio_weight as double) as strategy_portfolio_weight,
+        cast(rebalance_band_pct as double) as rebalance_band_pct,
+        cast(sector_cap_excess_pct as double) as sector_cap_excess_pct,
+        cast(corr_cluster_threshold as double) as corr_cluster_threshold
+    from {{ ref('dim_strategies') }}
 ),
 
--- Benchmark sector weights across all active S&P 500 constituents at each month-end
-benchmark_sectors as (
+buckets as (
     select
-        cast(date_trunc('month', m.trade_date) as date) as eval_date,
-        m.sector,
-        count(distinct m.ticker) * 1.0
-        / nullif(sum(count(distinct m.ticker)) over (partition by date_trunc('month', m.trade_date)), 0)
-            as benchmark_sector_weight
-    from {{ ref('stg_sp500_historical_membership') }} as m
-    inner join {{ ref('stg_trading_calendar') }} as c
-        on
-            m.trade_date = c.calendar_date
-            and c.is_month_end_trading_day = true
-    where m.is_in_index = true
-    group by date_trunc('month', m.trade_date), m.sector
+        strategy_id,
+        bucket_id,
+        cast(bucket_target_share as double) as bucket_target_share,
+        weighting_scheme,
+        route_to_spy_in_bear
+    from {{ ref('dim_strategy_buckets') }}
 ),
 
--- Month-end macro regime status to check if BEAR_CONTRACTION halts BUCKET_A_AGGRESSIVE
-month_end_macro as (
+eligible_candidates as (
     select
-        cast(date_trunc('month', r.trade_date) as date) as eval_date,
-        r.regime_status
-    from {{ ref('stg_macro_regimes') }} as r
-    inner join {{ ref('stg_trading_calendar') }} as c
-        on
-            r.trade_date = c.calendar_date
-            and c.is_month_end_trading_day = true
+        c.strategy_id,
+        c.eval_date,
+        c.ticker,
+        c.sector,
+        c.current_bucket as assigned_bucket,
+        greatest(0.0001, cast(c.downside_semi_deviation as double)) as downside_vol,
+        s.is_active,
+        s.strategy_portfolio_weight,
+        s.rebalance_band_pct,
+        s.sector_cap_excess_pct,
+        s.corr_cluster_threshold,
+        b.bucket_target_share,
+        b.weighting_scheme,
+        b.route_to_spy_in_bear
+    from {{ ref('dim_stock_bucket_classification') }} c
+    inner join strategies s
+        on c.strategy_id = s.strategy_id
+    inner join buckets b
+        on c.strategy_id = b.strategy_id
+        and c.current_bucket = b.bucket_id
+    where c.current_bucket != 'UNASSIGNED'
 ),
 
--- 1-year daily returns leading up to each eval_date for pairwise correlation clustering
-candidate_daily_returns as (
+distinct_eval_dates as (
+    select distinct
+        eval_date
+    from {{ ref('dim_stock_bucket_classification') }}
+),
+
+eval_dates_per_strategy as (
+    select distinct
+        s.strategy_id,
+        s.is_active,
+        s.strategy_portfolio_weight,
+        s.rebalance_band_pct,
+        m.eval_date
+    from strategies s
+    cross join distinct_eval_dates m
+),
+
+daily_returns_1y as (
     select
+        p.ticker,
+        p.trade_date,
+        (
+            cast(p.total_return_close as double)
+            / nullif(
+                lag(cast(p.total_return_close as double)) over (
+                    partition by p.ticker
+                    order by p.trade_date
+                ),
+                0.0
+            )
+        ) - 1.0 as daily_ret
+    from {{ ref('stg_stock_prices_daily') }} p
+),
+
+candidate_daily_window as (
+    select
+        c.strategy_id,
+        c.eval_date,
+        c.assigned_bucket,
+        c.corr_cluster_threshold,
+        c.ticker,
+        d.trade_date,
+        d.daily_ret
+    from eligible_candidates c
+    inner join daily_returns_1y d
+        on c.ticker = d.ticker
+        and c.eval_date >= d.trade_date
+        and c.eval_date - interval 365 day < d.trade_date
+    where d.daily_ret is not null
+),
+
+high_corr_pairs as (
+    select
+        a.strategy_id,
         a.eval_date,
         a.assigned_bucket,
-        a.ticker,
-        p.trade_date,
-        cast(p.daily_return as double) as daily_ret
-    from active_bucket_stocks as a
-    inner join {{ ref('stg_stock_prices_daily') }} as p
-        on
-            a.ticker = p.ticker
-            and p.trade_date <= (a.eval_date + interval '31 days')
-            and p.trade_date > (a.eval_date - interval '335 days')
-    where p.daily_return is not null
-),
-
--- Compute pairwise Pearson correlation (rho) within the same eval_date and bucket
-pairwise_corr as (
-    select
-        r1.eval_date,
-        r1.assigned_bucket,
-        r1.ticker as ticker_1,
-        r2.ticker as ticker_2,
-        count(*) as shared_days,
-        (
-            avg(r1.daily_ret * r2.daily_ret) - (avg(r1.daily_ret) * avg(r2.daily_ret))
-        ) / nullif(
-            stddev_pop(r1.daily_ret) * stddev_pop(r2.daily_ret),
-            0.0
-        ) as corr_1y
-    from candidate_daily_returns as r1
-    inner join candidate_daily_returns as r2
-        on
-            r1.eval_date = r2.eval_date
-            and r1.assigned_bucket = r2.assigned_bucket
-            and r1.trade_date = r2.trade_date
-            and r1.ticker <= r2.ticker
+        a.ticker as ticker_a,
+        b.ticker as ticker_b
+    from candidate_daily_window a
+    inner join candidate_daily_window b
+        on a.strategy_id = b.strategy_id
+        and a.eval_date = b.eval_date
+        and a.assigned_bucket = b.assigned_bucket
+        and a.trade_date = b.trade_date
+        and a.ticker <= b.ticker
     group by
-        r1.eval_date,
-        r1.assigned_bucket,
-        r1.ticker,
-        r2.ticker
+        a.strategy_id,
+        a.eval_date,
+        a.assigned_bucket,
+        a.corr_cluster_threshold,
+        a.ticker,
+        b.ticker
+    having
+        a.ticker = b.ticker
+        or (
+            count(*) >= 60
+            and corr(a.daily_ret, b.daily_ret) > a.corr_cluster_threshold
+        )
 ),
 
--- Group correlated stocks (rho > 0.75) into shared risk units anchored by min(ticker)
-high_corr_links as (
+cluster_assignment as (
     select
+        strategy_id,
         eval_date,
         assigned_bucket,
-        ticker_1 as ticker,
-        ticker_2 as partner_ticker
-    from pairwise_corr
-    where shared_days >= 120 and corr_1y > 0.75
-    union all
-    select
+        ticker_b as ticker,
+        min(ticker_a) as correlation_cluster_id
+    from high_corr_pairs
+    group by
+        strategy_id,
         eval_date,
         assigned_bucket,
-        ticker_2 as ticker,
-        ticker_1 as partner_ticker
-    from pairwise_corr
-    where shared_days >= 120 and corr_1y > 0.75 and ticker_1 != ticker_2
-),
-
-clusters as (
-    select
-        eval_date,
-        assigned_bucket,
-        ticker,
-        'CLUSTER_' || min(partner_ticker) as correlation_cluster_id
-    from high_corr_links
-    group by eval_date, assigned_bucket, ticker
+        ticker_b
 ),
 
 cluster_sizes as (
     select
-        a.eval_date,
-        a.ticker,
-        a.sector,
-        a.assigned_bucket,
-        1.0 / a.downside_vol as inverse_downside_vol,
-        coalesce(c.correlation_cluster_id, 'CLUSTER_' || a.ticker) as correlation_cluster_id,
-        count(*) over (
-            partition by a.eval_date, coalesce(c.correlation_cluster_id, 'CLUSTER_' || a.ticker)
-        ) as cluster_member_count
-    from active_bucket_stocks as a
-    left join clusters as c
-        on
-            a.eval_date = c.eval_date
-            and a.ticker = c.ticker
+        strategy_id,
+        eval_date,
+        assigned_bucket,
+        correlation_cluster_id,
+        count(*) as cluster_member_count
+    from cluster_assignment
+    group by
+        strategy_id,
+        eval_date,
+        assigned_bucket,
+        correlation_cluster_id
 ),
 
--- Split inverse volatility across correlated cluster members and normalize to 100%
-risk_parity_raw as (
+macro_at_eval as (
     select
-        cs.eval_date,
-        cs.ticker,
-        cs.sector,
-        cs.assigned_bucket,
-        cs.inverse_downside_vol,
-        cs.correlation_cluster_id,
-        (cs.inverse_downside_vol / cs.cluster_member_count)
-        / nullif(
-            sum(cs.inverse_downside_vol / cs.cluster_member_count) over (partition by cs.eval_date),
-            0.0
-        ) as raw_risk_parity_weight,
-        coalesce(bs.benchmark_sector_weight, 0.10) as benchmark_sector_weight,
-        coalesce(mm.regime_status, 'BULL_STABLE') as regime_status
-    from cluster_sizes as cs
-    left join benchmark_sectors as bs
-        on
-            cs.eval_date = bs.eval_date
-            and cs.sector = bs.sector
-    left join month_end_macro as mm
-        on cs.eval_date = mm.eval_date
+        trade_date as eval_date,
+        regime_status
+    from {{ ref('stg_macro_regimes') }}
 ),
 
--- Enforce sector cap (+5% over benchmark sector weight) and macro regime override
-sector_totals as (
+raw_risk_units as (
+    select
+        c.strategy_id,
+        c.eval_date,
+        c.ticker,
+        c.sector,
+        c.assigned_bucket,
+        c.is_active,
+        c.strategy_portfolio_weight,
+        c.rebalance_band_pct,
+        c.sector_cap_excess_pct,
+        coalesce(cl.correlation_cluster_id, c.ticker) as correlation_cluster_id,
+        coalesce(cs.cluster_member_count, 1) as cluster_member_count,
+        case
+            when coalesce(m.regime_status, 'BULL_STABLE') = 'BEAR_CONTRACTION'
+                 and c.route_to_spy_in_bear = true
+            then 0.0
+            else c.bucket_target_share
+        end as active_bucket_share,
+        case
+            when c.weighting_scheme = 'EQUAL_WEIGHT'
+            then 1.0 / cast(coalesce(cs.cluster_member_count, 1) as double)
+            else (1.0 / c.downside_vol) / cast(coalesce(cs.cluster_member_count, 1) as double)
+        end as cluster_adj_inv_vol
+    from eligible_candidates c
+    left join cluster_assignment cl
+        on c.strategy_id = cl.strategy_id
+        and c.eval_date = cl.eval_date
+        and c.assigned_bucket = cl.assigned_bucket
+        and c.ticker = cl.ticker
+    left join cluster_sizes cs
+        on cl.strategy_id = cs.strategy_id
+        and cl.eval_date = cs.eval_date
+        and cl.assigned_bucket = cs.assigned_bucket
+        and cl.correlation_cluster_id = cs.correlation_cluster_id
+    left join macro_at_eval m
+        on c.eval_date = m.eval_date
+),
+
+bucket_normalized as (
     select
         *,
-        sum(
-            case
-                when regime_status = 'BEAR_CONTRACTION' and assigned_bucket = 'BUCKET_A_AGGRESSIVE'
-                    then 0.0
-                else raw_risk_parity_weight
-            end
-        ) over (partition by eval_date, sector) as raw_sector_weight
-    from risk_parity_raw
+        coalesce(
+            active_bucket_share
+            * (
+                cluster_adj_inv_vol
+                / nullif(
+                    sum(cluster_adj_inv_vol) over (
+                        partition by strategy_id, eval_date, assigned_bucket
+                    ),
+                    0.0
+                )
+            ),
+            0.0
+        ) as uncapped_weight
+    from raw_risk_units
 ),
 
-capped_equities as (
+benchmark_sector_weights as (
     select
-        eval_date,
-        ticker,
-        assigned_bucket,
-        inverse_downside_vol,
-        correlation_cluster_id,
-        raw_risk_parity_weight,
-        benchmark_sector_weight,
+        trade_date as eval_date,
+        coalesce(sector, 'Unclassified') as sector,
+        cast(count(*) as double) / nullif(
+            cast(sum(count(*)) over (partition by trade_date) as double),
+            0.0
+        ) as sp500_sector_weight
+    from {{ ref('stg_sp500_historical_membership') }}
+    where is_in_index = true
+    group by trade_date, coalesce(sector, 'Unclassified')
+),
+
+sector_totals as (
+    select
+        b.strategy_id,
+        b.eval_date,
+        b.sector,
+        b.sector_cap_excess_pct,
+        sum(b.uncapped_weight) as model_sector_weight,
+        coalesce(s.sp500_sector_weight, 0.10) + b.sector_cap_excess_pct as max_sector_cap
+    from bucket_normalized b
+    left join benchmark_sector_weights s
+        on b.eval_date = s.eval_date
+        and b.sector = s.sector
+    group by
+        b.strategy_id,
+        b.eval_date,
+        b.sector,
+        b.sector_cap_excess_pct,
+        s.sp500_sector_weight
+),
+
+sector_capped_equities as (
+    select
+        b.strategy_id,
+        b.eval_date,
+        b.ticker,
+        b.sector,
+        b.assigned_bucket,
+        b.is_active,
+        b.strategy_portfolio_weight,
+        b.rebalance_band_pct,
+        b.correlation_cluster_id,
+        b.uncapped_weight,
         case
-            -- Halt Aggressive Bucket during BEAR_CONTRACTION (Breadth < 30%)
-            when regime_status = 'BEAR_CONTRACTION' and assigned_bucket = 'BUCKET_A_AGGRESSIVE'
-                then 0.0
-            -- Scale down proportionally if sector exceeds (benchmark_sector_weight + 5%)
-            when raw_sector_weight > (benchmark_sector_weight + 0.05) and raw_sector_weight > 0
-                then raw_risk_parity_weight * ((benchmark_sector_weight + 0.05) / raw_sector_weight)
-            else raw_risk_parity_weight
-        end as final_target_weight
-    from sector_totals
+            when st.model_sector_weight > st.max_sector_cap and st.model_sector_weight > 0.0
+            then b.uncapped_weight * (st.max_sector_cap / st.model_sector_weight)
+            else b.uncapped_weight
+        end as capped_equity_weight
+    from bucket_normalized b
+    inner join sector_totals st
+        on b.strategy_id = st.strategy_id
+        and b.eval_date = st.eval_date
+        and b.sector = st.sector
+    where b.uncapped_weight > 0.0
 ),
 
--- Route any residual unallocated weight (from sector caps or macro halts) into SPY Safe Harbor
-spy_safe_harbor_fallback as (
+residual_safe_harbor as (
     select
-        eval_date,
+        e.strategy_id,
+        e.eval_date,
         'SPY' as ticker,
+        'Broad Market ETF' as sector,
         'SAFE_HARBOR_SPY' as assigned_bucket,
-        0.0 as inverse_downside_vol,
-        'CLUSTER_SPY_BENCHMARK' as correlation_cluster_id,
-        0.0 as raw_risk_parity_weight,
-        1.0 as benchmark_sector_weight,
-        greatest(0.0, 1.0 - sum(final_target_weight)) as final_target_weight
-    from capped_equities
-    group by eval_date
-    having (1.0 - sum(final_target_weight)) > 1e-6
+        e.is_active,
+        e.strategy_portfolio_weight,
+        e.rebalance_band_pct,
+        'SPY_CLUSTER' as correlation_cluster_id,
+        greatest(0.0, 1.0 - coalesce(sum(c.uncapped_weight), 0.0)) as uncapped_weight,
+        greatest(0.0, 1.0 - coalesce(sum(c.capped_equity_weight), 0.0)) as capped_equity_weight
+    from eval_dates_per_strategy e
+    left join sector_capped_equities c
+        on e.strategy_id = c.strategy_id
+        and e.eval_date = c.eval_date
+    group by
+        e.strategy_id,
+        e.eval_date,
+        e.is_active,
+        e.strategy_portfolio_weight,
+        e.rebalance_band_pct
+    having greatest(0.0, 1.0 - coalesce(sum(c.capped_equity_weight), 0.0)) > 0.000001
 ),
 
 combined_allocations as (
-    select * from capped_equities
-    where final_target_weight > 0
+    select * from sector_capped_equities
     union all
-    select * from spy_safe_harbor_fallback
+    select * from residual_safe_harbor
+),
+
+normalized_final as (
+    select
+        strategy_id,
+        eval_date,
+        ticker,
+        sector,
+        assigned_bucket,
+        is_active,
+        strategy_portfolio_weight,
+        rebalance_band_pct,
+        correlation_cluster_id,
+        uncapped_weight,
+        capped_equity_weight / nullif(
+            sum(capped_equity_weight) over (partition by strategy_id, eval_date),
+            0.0
+        ) as strategy_target_weight
+    from combined_allocations
 )
 
 select
+    strategy_id,
     eval_date,
     ticker,
+    sector,
     assigned_bucket,
-    round(cast(inverse_downside_vol as decimal(12, 4)), 4) as inverse_downside_vol,
+    is_active,
     correlation_cluster_id,
-    round(cast(raw_risk_parity_weight as decimal(8, 6)), 6) as raw_risk_parity_weight,
-    round(cast(benchmark_sector_weight as decimal(8, 6)), 6) as benchmark_sector_weight,
-    round(cast(final_target_weight as decimal(8, 6)), 6) as final_target_weight,
-    round(cast(final_target_weight * 0.80 as decimal(8, 6)), 6) as lower_tolerance_bound,
-    round(cast(final_target_weight * 1.20 as decimal(8, 6)), 6) as upper_tolerance_bound
-from combined_allocations
-order by eval_date asc, final_target_weight desc, ticker asc
+    round(cast(uncapped_weight as decimal(8, 6)), 6) as raw_risk_parity_weight,
+    round(cast(strategy_target_weight as decimal(8, 6)), 6) as strategy_target_weight,
+    round(cast(strategy_target_weight as decimal(8, 6)), 6) as final_target_weight,
+    round(
+        cast(strategy_target_weight * strategy_portfolio_weight as decimal(8, 6)),
+        6
+    ) as portfolio_target_weight,
+    round(
+        cast(strategy_target_weight * (1.0 - rebalance_band_pct) as decimal(8, 6)),
+        6
+    ) as lower_tolerance_bound,
+    round(
+        cast(strategy_target_weight * (1.0 + rebalance_band_pct) as decimal(8, 6)),
+        6
+    ) as upper_tolerance_bound
+from normalized_final
+order by
+    strategy_id asc,
+    eval_date asc,
+    final_target_weight desc,
+    ticker asc
